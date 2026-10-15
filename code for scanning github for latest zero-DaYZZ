@@ -1,0 +1,139 @@
+
+#!/usr/bin/env python3
+
+import json
+import urllib.request
+import urllib.error
+from datetime import datetime
+from urllib.parse import urlencode
+
+API_URL = "https://api.github.com/advisories"
+
+HEADERS = {
+    "User-Agent": "ZeroDayPatchTracker/1.0",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+
+
+def fetch_advisories(severity):
+    params = urlencode({
+        "severity": severity,
+        "per_page": 100,
+        "sort": "published",
+        "direction": "desc",
+    })
+
+    request = urllib.request.Request(
+        f"{API_URL}?{params}",
+        headers=HEADERS,
+    )
+
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def format_date(value):
+    if not value:
+        return "Unknown date"
+
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+    except ValueError:
+        return value
+
+
+def check_github_advisories():
+    print("🔍 Checking GitHub security advisories...\n")
+
+    seen = set()
+    count = 0
+
+    for severity in ("critical", "high"):
+        try:
+            advisories = fetch_advisories(severity)
+
+            if not isinstance(advisories, list):
+                print(f"Unexpected API response for {severity}.")
+                continue
+
+            for bug in advisories:
+                # Avoid duplicate advisories.
+                advisory_id = bug.get("ghsa_id") or bug.get("html_url")
+
+                if advisory_id in seen:
+                    continue
+
+                seen.add(advisory_id)
+
+                vulnerabilities = bug.get("vulnerabilities") or []
+
+                # Show only advisories with a documented fix.
+                patched = [
+                    item for item in vulnerabilities
+                    if item.get("first_patched_version")
+                ]
+
+                if not patched:
+                    continue
+
+                cve_id = bug.get("cve_id") or "No CVE assigned"
+                summary = bug.get("summary") or "No summary provided"
+                published = format_date(bug.get("published_at"))
+                url = bug.get("html_url", "No URL available")
+
+                print(f"🚨 [{severity.upper()}] {cve_id}")
+                print(f"🆔 GHSA: {bug.get('ghsa_id', 'Unknown')}")
+
+                for item in patched:
+                    package = item.get("package") or {}
+                    name = package.get("name", "Unknown package")
+                    ecosystem = package.get("ecosystem", "Unknown ecosystem")
+                    fixed = item["first_patched_version"]
+                    affected = item.get(
+                        "vulnerable_version_range", "Not specified"
+                    )
+
+                    print(f"📦 Package: {name} ({ecosystem})")
+                    print(f"⚠️ Affected versions: {affected}")
+                    print(f"🛠️ First patched version: {fixed}")
+
+                print(f"📝 Summary: {summary}")
+                print(f"📅 Published: {published}")
+                print(f"🔗 Advisory: {url}")
+                print("-" * 65)
+                print()
+
+                count += 1
+
+        except urllib.error.HTTPError as exc:
+            print(f"❌ GitHub API returned HTTP {exc.code} for {severity}.")
+            if exc.code == 403 or exc.code == 429:
+                print("Rate limit or access restriction; try again later.")
+        except urllib.error.URLError as exc:
+            print(f"❌ Network error: {exc.reason}")
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            print(f"❌ Invalid API response: {exc}")
+
+    if count == 0:
+        print("No matching advisories with documented fixes were found.")
+    else:
+        print(f"✅ Displayed {count} advisories.")
+
+
+if __name__ == "__main__":
+    check_github_advisories()
+
+Run it
+
+Save the file, then execute:
+bash
+
+python3 main.py
+
+No third-party Python packages are required.
+
+One limitation to know: This checks the latest 100 results for each severity, not every advisory ever published. It also doesn't yet filter by a particular date range. And a documented first patched version doesn't guarantee that every affected deployment is vulnerable; vendor backports and configuration matter.
+
+This gives you a functional starting point for your patch tracker, bro. 🚀
